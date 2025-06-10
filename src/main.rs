@@ -1,16 +1,16 @@
-mod app;
-mod rw_mod;
+pub mod app;
+pub mod mods;
 
 use std::{
     fs::File,
-    io::{BufWriter, Read, Write},
+    io::{Read, Write},
     time::Duration,
 };
 
 use app::Model;
 use crossterm::event;
+use mods::{Mod, Tags, game::ModMetaData};
 use ron::ser::PrettyConfig;
-use rw_mod::{Mod, ModMetaData, Tags};
 
 use color_eyre::Result;
 use quick_xml::de::from_str;
@@ -64,10 +64,7 @@ fn main() -> Result<()> {
             f.read_to_string(&mut buf)?;
             match ron::de::from_str(&buf) {
                 Ok(v) => v,
-                Err(e) => {
-                    todo!("{:?}", e);
-                    read_dir()?
-                }
+                Err(_) => read_dir()?,
             }
         }
         Err(_) => read_dir()?,
