@@ -49,15 +49,15 @@ where
     }
 }
 impl Tags {
-    pub fn spans(&self, bg_color: Color, selected_idx: Option<usize>) -> TagSpans {
+    pub fn spans(&self, bg_color: Color, selected_tag: SelectedTag) -> TagSpans {
         TagSpans {
             idx: 0,
-            selected_idx,
+            selected_tag,
             bg_color,
             tags: self,
         }
     }
-    pub fn styled_line(&self, bg_color: Color, selected_idx: Option<usize>) -> Line {
+    pub fn styled_line(&self, bg_color: Color, is_selected: bool) -> Line {
         // this works but looks weird, investigate with real data
         //for tag in self.0.as_slice().windows(2) {
         //let (l, r) = (&tag[0], &tag[1]);
@@ -82,7 +82,12 @@ impl Tags {
         //));
         //}
         let mut buff = vec![];
-        for span in TagSpans::new(selected_idx, bg_color, self) {
+        let selected = if is_selected {
+            SelectedTag::All
+        } else {
+            SelectedTag::None
+        };
+        for span in TagSpans::new(selected, bg_color, self) {
             buff.push(span);
         }
         Line::from(buff)
@@ -133,16 +138,21 @@ impl Tags {
 }
 pub struct TagSpans<'tags> {
     idx: usize,
-    selected_idx: Option<usize>,
+    selected_tag: SelectedTag,
     bg_color: Color,
     tags: &'tags Tags,
 }
+pub enum SelectedTag {
+    All,
+    Index(usize),
+    None,
+}
 
 impl<'tags> TagSpans<'tags> {
-    fn new(selected_idx: Option<usize>, bg_color: Color, tags: &'tags Tags) -> Self {
+    fn new(selected_tag: SelectedTag, bg_color: Color, tags: &'tags Tags) -> Self {
         Self {
             idx: 0,
-            selected_idx,
+            selected_tag,
             bg_color,
             tags,
         }
@@ -166,10 +176,16 @@ impl<'spans> Iterator for TagSpans<'spans> {
 
         let tag = self.tags.0.get(self.idx)?;
         let bg = Tag::blend_color(tag.color, self.bg_color, 0.8);
-        let (text_color, text_bg) = if self.selected_idx.is_none_or(|i| i != self.idx) {
-            (tag.color, bg)
-        } else {
-            (bg, tag.color)
+        let (text_color, text_bg) = match self.selected_tag {
+            SelectedTag::All => (bg, tag.color),
+            SelectedTag::Index(i) => {
+                if i == self.idx {
+                    (bg, tag.color)
+                } else {
+                    (tag.color, bg)
+                }
+            }
+            SelectedTag::None => (tag.color, bg),
         };
         self.idx += 1;
         Some(Span::styled(

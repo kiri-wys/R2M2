@@ -110,12 +110,7 @@ impl Model {
             rows.push(Row::new(vec![
                 Cell::from(line_num),
                 name,
-                Cell::from(
-                    game_mod
-                        .tags
-                        // TODO: Make all tags be highlighted
-                        .styled_line(table_color, self.table_state.selected()),
-                ),
+                Cell::from(game_mod.tags.styled_line(table_color, selected)),
             ]));
         }
 
@@ -220,7 +215,7 @@ impl Model {
                 let area =
                     Self::popup_area(area, Constraint::Percentage(70), Constraint::Percentage(60));
                 let bg_color = Color::Rgb(0x26, 0x26, 0x26);
-                let p = Paragraph::new(vec![self.persistent.tags.styled_line(bg_color, None)])
+                let p = Paragraph::new(vec![self.persistent.tags.styled_line(bg_color, false)])
                     .block(Block::bordered().title("Tags"))
                     .bg(bg_color);
                 f.render_widget(ratatui::widgets::Clear, area);
@@ -233,11 +228,11 @@ impl Model {
                 f.render_widget(ratatui::widgets::Clear, area);
 
                 let mut items = vec![];
-                for span in self
-                    .persistent
-                    .tags
-                    .spans(bg_color, self.list_state.selected())
-                {
+                let selected = match self.list_state.selected() {
+                    Some(i) => crate::mods::SelectedTag::Index(i),
+                    None => crate::mods::SelectedTag::None,
+                };
+                for span in self.persistent.tags.spans(bg_color, selected) {
                     items.push(Line::from(vec![span]));
                 }
                 let list = List::new(items)
