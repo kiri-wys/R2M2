@@ -1,20 +1,26 @@
+mod messages;
+mod widgets;
+
+pub use messages::try_message;
+use widgets::StatusLine;
+
 use std::{collections::HashMap, str::FromStr};
 
-use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind};
+use messages::{Message, MoveDirection};
 use rand::Rng as _;
 use ratatui::{
-    Frame,
-    layout::{Alignment, Constraint, Direction, Flex, Layout, Rect},
+    layout::{Constraint, Direction, Flex, Layout, Rect},
     style::{Color, Style, Stylize},
     text::{Line, Span},
     widgets::{Block, Cell, List, ListState, Paragraph, Row, Table, TableState},
+    Frame,
 };
 use serde::{Deserialize, Serialize};
-use tui_input::{Input, backend::crossterm::EventHandler};
+use tui_input::{backend::crossterm::EventHandler, Input};
 
-use crate::mods::{Mod, OrderedVec, Tag};
+use crate::mods::{app_mod::Mod, tag::Tag, OrderedItems};
 
-#[derive(Default)]
+#[derive(Clone, Copy, Default)]
 pub enum Mode {
     #[default]
     Normal,
@@ -52,6 +58,7 @@ pub struct Model {
     input_special: Color,
     table_state: TableState,
     list_state: ListState,
+    status_line: StatusLine,
     // keeping queries cached introduces a whole set of problems and
     // it might not even be worth, TODO: benchmark
     //mods_view: Vec<Mod>,
@@ -59,8 +66,8 @@ pub struct Model {
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Persistent {
-    pub mods: OrderedVec<Mod>,
-    pub tags: OrderedVec<Tag>,
+    pub mods: OrderedItems<Mod>,
+    pub tags: OrderedItems<Tag>,
 }
 impl Default for Persistent {
     fn default() -> Self {
@@ -72,17 +79,27 @@ impl Default for Persistent {
 }
 
 impl Model {
+    pub fn new(persistent: Persistent) -> Self {
+        let mut res = Self {
+            persistent,
+            ..Default::default()
+        };
+
+        if !res.persistent.mods.is_empty() {
+            res.table_state.select_first();
+        }
+        if !res.persistent.tags.is_empty() {
+            res.list_state.select_first();
+        }
+        res.status_line.state.background_color = Color::Rgb(0x0b, 0x0b, 0x0b);
+        res.status_line.state.change_mode(res.current_mode);
+        res.status_line
+            .state
+            .change_hint(res.current_mode, &res.movement_delta);
+        res
+    }
     pub fn should_close(&self) -> bool {
         self.should_close
-    }
-    pub fn set_persistent(&mut self, p: Persistent) {
-        if !p.mods.is_empty() {
-            self.table_state.select_first();
-        }
-        if !p.mods.is_empty() {
-            self.list_state.select_first();
-        }
-        self.persistent = p;
     }
     pub fn result(self) -> Persistent {
         self.persistent
@@ -134,48 +151,8 @@ impl Model {
             .bg(table_color);
 
         f.render_stateful_widget(table, main_layout[0], &mut self.table_state);
-        self.draw_line(f, main_layout[1]);
+        self.status_line.render_widget(f, main_layout[1]);
         self.draw_popup(f, area);
-    }
-
-    #[inline]
-    fn draw_line(&self, f: &mut Frame, rect: Rect) {
-        let bar_layout = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints(vec![Constraint::Min(1), Constraint::Min(1)])
-            .split(rect);
-
-        let mode_color = self.current_mode.color_repr();
-        let bar = Color::Rgb(0x0b, 0x0b, 0x0b);
-        let hint = if !self.movement_delta.is_empty() {
-            self.movement_delta.to_string()
-        } else {
-            match self.current_mode {
-                Mode::Normal => "Press ? for help, 'q' to quit",
-                Mode::CreateTag | Mode::ShowTags | Mode::Insert => "Press ESC to go back",
-            }
-            .to_string()
-        };
-        f.render_widget(
-            Line::from(vec![
-                Span::styled(
-                    self.current_mode.str_repr(),
-                    Style::default().bg(mode_color).fg(bar).bold(),
-                ),
-                Span::styled("", Style::default().fg(mode_color).bg(bar)),
-            ])
-            .bg(bar),
-            bar_layout[0],
-        );
-        f.render_widget(
-            Line::from(vec![Span::styled(
-                hint,
-                Style::default().fg(mode_color).bg(bar),
-            )])
-            .alignment(Alignment::Right)
-            .bg(bar),
-            bar_layout[1],
-        );
     }
 
     #[inline]
@@ -237,8 +214,8 @@ impl Model {
 
                 let mut items = vec![];
                 let selected = match self.list_state.selected() {
-                    Some(i) => crate::mods::SelectedTag::Index(i),
-                    None => crate::mods::SelectedTag::None,
+                    Some(i) => crate::mods::tag::SelectedTag::Index(i),
+                    None => crate::mods::tag::SelectedTag::None,
                 };
                 for span in self.persistent.tags.spans(bg_color, selected) {
                     items.push(Line::from(vec![span]));
@@ -298,7 +275,12 @@ impl Model {
     pub fn update(&mut self, msg: Message) -> Option<Message> {
         match msg {
             Message::ClearCommand => self.movement_delta.clear(),
-            Message::AppendMovement(ch) => self.movement_delta.push(ch),
+            Message::AppendMovement(ch) => {
+                self.movement_delta.push(ch);
+                self.status_line
+                    .state
+                    .change_hint(self.current_mode, &self.movement_delta);
+            }
             Message::MoveDirection(direction) => {
                 let d: usize = self.movement_delta.parse().unwrap_or(1);
                 // TODO: This is horrid, refactor to use proper patterns
@@ -405,6 +387,10 @@ impl Model {
                 }
             }
             Message::ChangeMode(mode) => {
+                self.status_line.state.change_mode(mode);
+                self.status_line
+                    .state
+                    .change_hint(mode, &self.movement_delta);
                 // TODO: Generalize
                 if matches!(mode, Mode::CreateTag) {
                     self.input_collection.clear();
@@ -461,84 +447,4 @@ fn random_color() -> (u8, u8, u8) {
         ((g + m) * 255.0) as u8,
         ((b + m) * 255.0) as u8,
     )
-}
-pub enum MoveDirection {
-    Up,
-    Down,
-    Left,
-    Right,
-}
-pub enum Message {
-    ClearCommand,
-    AppendMovement(char),
-    MoveDirection(MoveDirection),
-    PropagateEvent(Event),
-    NextField,
-    InsertTag,
-    ChangeMode(Mode),
-    Exit,
-}
-pub fn try_message(model: &Model, ev: Event) -> Option<Message> {
-    match ev {
-        Event::Key(key_event) => match key_event.kind {
-            KeyEventKind::Press => match model.current_mode {
-                Mode::Normal => normal_key_press(key_event),
-                Mode::CreateTag => {
-                    let res = match key_event.code {
-                        KeyCode::Esc => Message::ChangeMode(Mode::Normal),
-                        KeyCode::Insert | KeyCode::Tab | KeyCode::Enter => Message::NextField,
-                        _ => Message::PropagateEvent(ev),
-                    };
-                    Some(res)
-                }
-                Mode::ShowTags => show_tags_key_press(key_event),
-                Mode::Insert => insert_key_press(key_event),
-            },
-            KeyEventKind::Repeat => None,
-            KeyEventKind::Release => None,
-        },
-        Event::Mouse(_) => None,
-        _ => None,
-    }
-}
-
-#[inline]
-fn normal_key_press(key: KeyEvent) -> Option<Message> {
-    let res = match key.code {
-        KeyCode::Esc => Message::ClearCommand,
-        KeyCode::Char(c) if c.is_ascii_digit() => Message::AppendMovement(c),
-        KeyCode::Char('q') => Message::Exit,
-        KeyCode::Char('T') => Message::ChangeMode(Mode::CreateTag),
-        KeyCode::Char('t') => Message::ChangeMode(Mode::ShowTags),
-        KeyCode::Char('i') => Message::ChangeMode(Mode::Insert),
-        KeyCode::Char('?') => todo!(),
-        KeyCode::Char('k') | KeyCode::Up => Message::MoveDirection(MoveDirection::Up),
-        KeyCode::Char('j') | KeyCode::Down => Message::MoveDirection(MoveDirection::Down),
-        KeyCode::Char('h') | KeyCode::Left => Message::MoveDirection(MoveDirection::Left),
-        KeyCode::Char('l') | KeyCode::Right => Message::MoveDirection(MoveDirection::Right),
-        _ => return None,
-    };
-    Some(res)
-}
-#[inline]
-fn show_tags_key_press(key: KeyEvent) -> Option<Message> {
-    let res = match key.code {
-        KeyCode::Esc => Message::ChangeMode(Mode::Normal),
-        _ => return None,
-    };
-    Some(res)
-}
-#[inline]
-fn insert_key_press(key: KeyEvent) -> Option<Message> {
-    let res = match key.code {
-        KeyCode::Esc | KeyCode::Char('q') => Message::ChangeMode(Mode::Normal),
-        KeyCode::Enter => Message::InsertTag,
-        KeyCode::Char(c) if c.is_ascii_digit() => Message::AppendMovement(c),
-        KeyCode::Char('k') | KeyCode::Up => Message::MoveDirection(MoveDirection::Up),
-        KeyCode::Char('j') | KeyCode::Down => Message::MoveDirection(MoveDirection::Down),
-        KeyCode::Char('h') | KeyCode::Left => Message::MoveDirection(MoveDirection::Left),
-        KeyCode::Char('l') | KeyCode::Right => Message::MoveDirection(MoveDirection::Right),
-        _ => return None,
-    };
-    Some(res)
 }

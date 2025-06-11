@@ -9,7 +9,7 @@ use std::{
 
 use app::Model;
 use crossterm::event;
-use mods::{Mod, game::ModMetaData};
+use mods::{app_mod::Mod, game::ModMetaData};
 use ron::ser::PrettyConfig;
 
 use color_eyre::Result;
@@ -81,8 +81,7 @@ fn main() -> Result<()> {
         Err(_) => read_dir()?,
     };
     let mut terminal = ratatui::init();
-    let mut model = Model::default();
-    model.set_persistent(persistent);
+    let model = Model::new(persistent);
     let res = run_app(&mut terminal, model)?;
     ratatui::restore();
     let mut buff = String::new();

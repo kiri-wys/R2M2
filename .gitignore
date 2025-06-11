@@ -1,3 +1,4 @@
 /target
 .direnv
 mod_info.ron
+log
