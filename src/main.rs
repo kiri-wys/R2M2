@@ -15,6 +15,8 @@ use ron::ser::PrettyConfig;
 use color_eyre::Result;
 use quick_xml::de::from_str;
 use ratatui::{Terminal, prelude::CrosstermBackend};
+use tracing_error::ErrorLayer;
+use tracing_subscriber::{layer::SubscriberExt as _, util::SubscriberInitExt};
 
 fn run_app(
     terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
@@ -46,17 +48,26 @@ fn read_dir() -> Result<app::Persistent> {
         path.push("About/About.xml");
         let xml = std::fs::read_to_string(path).unwrap();
         let metadata: ModMetaData = from_str(&xml)?;
-        mods.push(Mod {
-            metadata,
-            tags: Default::default(),
-        });
+        mods.push(Mod::new(metadata));
     }
     Ok(app::Persistent {
-        mods,
+        mods: mods.into(),
         tags: Default::default(),
     })
 }
 fn main() -> Result<()> {
+    let log_file = std::fs::File::create("./log")?;
+    let file_subscriber = tracing_subscriber::fmt::layer()
+        .with_file(true)
+        .with_line_number(true)
+        .with_writer(log_file)
+        .with_target(false)
+        .with_ansi(false);
+    tracing_subscriber::registry()
+        .with(file_subscriber)
+        .with(ErrorLayer::default())
+        .init();
+
     color_eyre::install()?;
     let persistent: app::Persistent = match File::open("./mod_info.ron") {
         Ok(mut f) => {

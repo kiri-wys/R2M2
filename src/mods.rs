@@ -1,10 +1,9 @@
 //! Models related to Rimworld
 //!
 //! [`Mod`] contains all the relevant data to a Rimworld mod.
-//! [`Tags`] is a container of [`Tag`] that is internally ordered
-//! by its score and name in that order.
+//! [`OrderedVec<T>`] is a container of <T> that is internally ordered
 //! [`TagSpans`] may be used to get a display representation to
-//! [`Tags`]. It blends background_color with each [`Tag`]'s color.
+//! a collection of [`Tag`]. It blends background_color with each [`Tag`]'s color.
 pub mod game;
 
 use std::{cmp::Ordering, hash::Hash};
@@ -17,26 +16,36 @@ use ratatui::{
 };
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct Mod {
-    pub metadata: ModMetaData,
-    pub tags: OrderedVec<Tag>,
-}
-
 pub trait Item {
     fn identifier(&self) -> &str;
     fn patch(&mut self, other: Self);
     fn vec_order(&self, other: &Self) -> Ordering;
 }
-#[derive(Default, Clone, Debug, Deserialize, Serialize)]
-pub struct OrderedVec<T> {
+#[derive(Default, Clone, Debug, Serialize)]
+pub struct OrderedVec<T: Item> {
     data: Vec<T>,
+}
+impl<'de, T> Deserialize<'de> for OrderedVec<T>
+where
+    T: Item + Deserialize<'de>,
+{
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct UnorderedVec<T> {
+            data: Vec<T>,
+        }
+        let res: UnorderedVec<T> = UnorderedVec::deserialize(deserializer)?;
+        Ok(res.data.into())
+    }
 }
 impl<T: Item> OrderedVec<T> {
     pub fn get_by_name(&self, name: &str) -> Option<&T> {
         self.data.iter().find(|&item| item.identifier() == name)
     }
-    pub fn get_mut_by_name(&mut self, name: &str) -> Option<&mut T> {
+    fn get_mut_by_name(&mut self, name: &str) -> Option<&mut T> {
         self.data.iter_mut().find(|item| item.identifier() == name)
     }
 
@@ -65,8 +74,28 @@ impl<T: Item> OrderedVec<T> {
     {
         self.data.get(index)
     }
+
+    pub fn iter(&self) -> std::slice::Iter<'_, T> {
+        self.data.iter()
+    }
 }
 
+impl<T> From<Vec<T>> for OrderedVec<T>
+where
+    T: Item,
+{
+    fn from(mut value: Vec<T>) -> Self {
+        value.sort_by(|a, b| a.vec_order(b));
+        Self { data: value }
+    }
+}
+
+impl OrderedVec<Mod> {
+    pub fn upsert_tag_to(&mut self, mod_idx: usize, tag: Tag) {
+        self.data.get_mut(mod_idx).unwrap().tags.upsert(tag);
+        self.data.sort_by(|a, b| a.vec_order(b));
+    }
+}
 impl OrderedVec<Tag> {
     pub fn spans(&self, bg_color: Color, selected_tag: SelectedTag) -> TagSpans {
         TagSpans {
@@ -171,6 +200,65 @@ impl<'spans> Iterator for TagSpans<'spans> {
     }
 }
 
+impl Item for Mod {
+    fn identifier(&self) -> &str {
+        &self.metadata.package_id
+    }
+
+    fn patch(&mut self, other: Self) {
+        *self = other;
+    }
+
+    fn vec_order(&self, other: &Self) -> Ordering {
+        match (self.tags.data.first(), other.tags.data.first()) {
+            (None, None) => self.metadata.name.cmp(&other.metadata.name),
+            (None, Some(_)) => Ordering::Greater,
+            (Some(_), None) => Ordering::Less,
+            (Some(_), Some(_)) => match self
+                .tags
+                .data
+                .iter()
+                .map(|v| v.score)
+                .cmp(other.tags.data.iter().map(|v| v.score))
+            {
+                Ordering::Equal => self.metadata.name.cmp(&other.metadata.name),
+                other => other,
+            },
+        }
+        /*match self.tags.get(0) {
+            Some(st) => {
+                match other.tags.get(0) {
+                    Some(ot) => {
+                        //let a = format!("\n({}: {:#?})", self.metadata.name, st);
+                        st.score.cmp(&ot.score)
+                    }
+                    None => Ordering::Less,
+                }
+            }
+            None => match other.tags.get(0) {
+                Some(_) => Ordering::Greater,
+                None => self.metadata.name.cmp(&other.metadata.name),
+            },
+        }*/
+    }
+}
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct Mod {
+    pub metadata: ModMetaData,
+    tags: OrderedVec<Tag>,
+}
+impl Mod {
+    pub fn new(metadata: ModMetaData) -> Self {
+        Self {
+            metadata,
+            tags: Default::default(),
+        }
+    }
+
+    pub fn tags_styled_line(&self, bg_color: Color, is_selected: bool) -> Line {
+        self.tags.styled_line(bg_color, is_selected)
+    }
+}
 impl Item for Tag {
     fn identifier(&self) -> &str {
         &self.name

@@ -57,10 +57,18 @@ pub struct Model {
     //mods_view: Vec<Mod>,
     persistent: Persistent,
 }
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Persistent {
-    pub mods: Vec<Mod>,
+    pub mods: OrderedVec<Mod>,
     pub tags: OrderedVec<Tag>,
+}
+impl Default for Persistent {
+    fn default() -> Self {
+        Self {
+            mods: vec![].into(),
+            tags: Default::default(),
+        }
+    }
 }
 
 impl Model {
@@ -110,7 +118,7 @@ impl Model {
             rows.push(Row::new(vec![
                 Cell::from(line_num),
                 name,
-                Cell::from(game_mod.tags.styled_line(table_color, selected)),
+                Cell::from(game_mod.tags_styled_line(table_color, selected)),
             ]));
         }
 
@@ -343,9 +351,9 @@ impl Model {
                     .get(self.list_state.selected().unwrap())
                     .unwrap();
                 self.list_state.select_first();
-                self.persistent.mods[self.table_state.selected().unwrap()]
-                    .tags
-                    .upsert(tag.clone());
+                self.persistent
+                    .mods
+                    .upsert_tag_to(self.table_state.selected().unwrap(), tag.clone());
                 return Some(Message::ChangeMode(Mode::Normal));
             }
             // TODO: This logic shouldn't be responsability of App
