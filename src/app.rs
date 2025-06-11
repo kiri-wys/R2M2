@@ -12,7 +12,7 @@ use ratatui::{
 use serde::{Deserialize, Serialize};
 use tui_input::{Input, backend::crossterm::EventHandler};
 
-use crate::mods::{Mod, Tag, Tags};
+use crate::mods::{Mod, OrderedVec, Tag};
 
 #[derive(Default)]
 pub enum Mode {
@@ -52,13 +52,15 @@ pub struct Model {
     input_special: Color,
     table_state: TableState,
     list_state: ListState,
-    mods_view: Vec<Mod>,
+    // keeping queries cached introduces a whole set of problems and
+    // it might not even be worth, TODO: benchmark
+    //mods_view: Vec<Mod>,
     persistent: Persistent,
 }
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct Persistent {
     pub mods: Vec<Mod>,
-    pub tags: Tags,
+    pub tags: OrderedVec<Tag>,
 }
 
 impl Model {
@@ -69,11 +71,9 @@ impl Model {
         if !p.mods.is_empty() {
             self.table_state.select_first();
         }
-        if !p.tags.is_empty() {
-            // TODO: Make sure to also do this when the state is updated
+        if !p.mods.is_empty() {
             self.list_state.select_first();
         }
-        self.mods_view = p.mods.clone();
         self.persistent = p;
     }
     pub fn result(self) -> Persistent {
@@ -90,7 +90,7 @@ impl Model {
         let table_color = Color::Rgb(0x16, 0x16, 0x16);
         let mut rows = vec![];
         // TODO: Keep in sync when persistent mods is updated
-        for (idx, game_mod) in self.mods_view.iter().enumerate() {
+        for (idx, game_mod) in self.persistent.mods.iter().enumerate() {
             let line_num = match self.table_state.selected() {
                 Some(s) => {
                     if s == idx {
@@ -300,11 +300,11 @@ impl Model {
                             MoveDirection::Up => s.saturating_sub(d),
                             MoveDirection::Down => s
                                 .saturating_add(d)
-                                .min(self.mods_view.len().saturating_sub(1)),
+                                .min(self.persistent.mods.len().saturating_sub(1)),
                             MoveDirection::Left => s.saturating_sub(d),
                             MoveDirection::Right => s
                                 .saturating_add(d)
-                                .min(self.mods_view.len().saturating_sub(1)),
+                                .min(self.persistent.mods.len().saturating_sub(1)),
                         });
                         self.table_state.select(new);
                     }

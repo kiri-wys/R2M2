@@ -9,7 +9,7 @@ use std::{
 
 use app::Model;
 use crossterm::event;
-use mods::{Mod, Tags, game::ModMetaData};
+use mods::{Mod, game::ModMetaData};
 use ron::ser::PrettyConfig;
 
 use color_eyre::Result;
@@ -48,12 +48,12 @@ fn read_dir() -> Result<app::Persistent> {
         let metadata: ModMetaData = from_str(&xml)?;
         mods.push(Mod {
             metadata,
-            tags: Tags::default(),
+            tags: Default::default(),
         });
     }
     Ok(app::Persistent {
         mods,
-        tags: Tags::default(),
+        tags: Default::default(),
     })
 }
 fn main() -> Result<()> {

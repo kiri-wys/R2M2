@@ -7,7 +7,7 @@
 //! [`Tags`]. It blends background_color with each [`Tag`]'s color.
 pub mod game;
 
-use std::hash::Hash;
+use std::{cmp::Ordering, hash::Hash};
 
 use game::ModMetaData;
 
@@ -20,35 +20,54 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Mod {
     pub metadata: ModMetaData,
-    pub tags: Tags,
+    pub tags: OrderedVec<Tag>,
 }
 
+pub trait Item {
+    fn identifier(&self) -> &str;
+    fn patch(&mut self, other: Self);
+    fn vec_order(&self, other: &Self) -> Ordering;
+}
 #[derive(Default, Clone, Debug, Deserialize, Serialize)]
-pub struct Tags(Vec<Tag>);
-impl<Iter> From<Iter> for Tags
-where
-    Iter: Iterator<Item = String>,
-{
-    fn from(value: Iter) -> Self {
-        let (mins, maxs) = value.size_hint();
-        let s = maxs.unwrap_or(mins);
-        let mut buff = Vec::with_capacity(s);
-        let mut seen = std::collections::HashSet::new();
-        for (idx, name) in value.enumerate() {
-            if !seen.insert(name.clone()) {
-                continue;
-            }
-            buff.push(Tag {
-                name,
-                color: Color::White,
-                score: idx as u64,
-            });
+pub struct OrderedVec<T> {
+    data: Vec<T>,
+}
+impl<T: Item> OrderedVec<T> {
+    pub fn get_by_name(&self, name: &str) -> Option<&T> {
+        self.data.iter().find(|&item| item.identifier() == name)
+    }
+    pub fn get_mut_by_name(&mut self, name: &str) -> Option<&mut T> {
+        self.data.iter_mut().find(|item| item.identifier() == name)
+    }
+
+    pub fn upsert(&mut self, other: T) {
+        if let Some(existing) = self.get_mut_by_name(other.identifier()) {
+            existing.patch(other);
+            return;
         }
-        buff.sort_by(|a, b| a.score.cmp(&b.score).then_with(|| a.name.cmp(&b.name)));
-        Tags(buff)
+        let idx = self
+            .data
+            .binary_search_by(|curr| curr.vec_order(&other))
+            .unwrap_or_else(|i| i);
+        self.data.insert(idx, other);
+    }
+    pub const fn len(&self) -> usize {
+        self.data.len()
+    }
+
+    pub const fn is_empty(&self) -> bool {
+        self.data.is_empty()
+    }
+
+    pub fn get<I>(&self, index: I) -> Option<&I::Output>
+    where
+        I: std::slice::SliceIndex<[T]>,
+    {
+        self.data.get(index)
     }
 }
-impl Tags {
+
+impl OrderedVec<Tag> {
     pub fn spans(&self, bg_color: Color, selected_tag: SelectedTag) -> TagSpans {
         TagSpans {
             idx: 0,
@@ -92,55 +111,12 @@ impl Tags {
         }
         Line::from(buff)
     }
-
-    pub fn get_by_name(&self, name: &str) -> Option<&Tag> {
-        self.0.iter().find(|&tag| tag.name == name)
-    }
-    pub fn get_mut_by_name(&mut self, name: &str) -> Option<&mut Tag> {
-        self.0.iter_mut().find(|tag| tag.name == name)
-    }
-
-    pub fn upsert(&mut self, tag: Tag) {
-        if let Some(existing) = self.get_mut_by_name(&tag.name) {
-            let Tag {
-                name: _,
-                score,
-                color,
-            } = tag;
-            existing.score = score;
-            existing.color = color;
-            return;
-        }
-        let idx = self
-            .0
-            .binary_search_by(|curr| {
-                curr.score
-                    .cmp(&tag.score)
-                    .then_with(|| curr.name.cmp(&tag.name))
-            })
-            .unwrap_or_else(|i| i);
-        self.0.insert(idx, tag);
-    }
-    pub const fn len(&self) -> usize {
-        self.0.len()
-    }
-
-    pub const fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-
-    pub fn get<I>(&self, index: I) -> Option<&I::Output>
-    where
-        I: std::slice::SliceIndex<[Tag]>,
-    {
-        self.0.get(index)
-    }
 }
 pub struct TagSpans<'tags> {
     idx: usize,
     selected_tag: SelectedTag,
     bg_color: Color,
-    tags: &'tags Tags,
+    tags: &'tags OrderedVec<Tag>,
 }
 pub enum SelectedTag {
     All,
@@ -149,7 +125,7 @@ pub enum SelectedTag {
 }
 
 impl<'tags> TagSpans<'tags> {
-    fn new(selected_tag: SelectedTag, bg_color: Color, tags: &'tags Tags) -> Self {
+    fn new(selected_tag: SelectedTag, bg_color: Color, tags: &'tags OrderedVec<Tag>) -> Self {
         Self {
             idx: 0,
             selected_tag,
@@ -162,7 +138,7 @@ impl<'spans> Iterator for TagSpans<'spans> {
     type Item = Span<'static>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.tags.0.is_empty() {
+        if self.tags.data.is_empty() {
             return if self.idx == 1 {
                 None
             } else {
@@ -174,7 +150,7 @@ impl<'spans> Iterator for TagSpans<'spans> {
             };
         }
 
-        let tag = self.tags.0.get(self.idx)?;
+        let tag = self.tags.data.get(self.idx)?;
         let bg = Tag::blend_color(tag.color, self.bg_color, 0.8);
         let (text_color, text_bg) = match self.selected_tag {
             SelectedTag::All => (bg, tag.color),
@@ -195,7 +171,28 @@ impl<'spans> Iterator for TagSpans<'spans> {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+impl Item for Tag {
+    fn identifier(&self) -> &str {
+        &self.name
+    }
+
+    fn patch(&mut self, other: Self) {
+        let Tag {
+            name: _,
+            score,
+            color,
+        } = other;
+        self.score = score;
+        self.color = color;
+    }
+
+    fn vec_order(&self, other: &Self) -> Ordering {
+        self.score
+            .cmp(&other.score)
+            .then(self.name.cmp(&other.name))
+    }
+}
+#[derive(Default, Clone, Debug, Deserialize, Serialize)]
 pub struct Tag {
     pub name: String,
     pub score: u64,
