@@ -2,23 +2,22 @@ mod messages;
 mod widgets;
 
 pub use messages::try_message;
-use widgets::StatusLine;
-
-use std::{collections::HashMap, str::FromStr};
+use widgets::{
+    StatusLine,
+    form::{Form, TagForm},
+};
 
 use messages::{Message, MoveDirection};
-use rand::Rng as _;
 use ratatui::{
+    Frame,
     layout::{Constraint, Direction, Flex, Layout, Rect},
     style::{Color, Style, Stylize},
-    text::{Line, Span},
+    text::Line,
     widgets::{Block, Cell, List, ListState, Paragraph, Row, Table, TableState},
-    Frame,
 };
 use serde::{Deserialize, Serialize};
-use tui_input::{backend::crossterm::EventHandler, Input};
 
-use crate::mods::{app_mod::Mod, tag::Tag, OrderedItems};
+use crate::mods::{OrderedItems, app_mod::Mod, tag::Tag};
 
 #[derive(Clone, Copy, Default)]
 pub enum Mode {
@@ -52,13 +51,10 @@ pub struct Model {
     should_close: bool,
     current_mode: Mode,
     movement_delta: String,
-    input_buffer: Input,
-    input_collection: HashMap<String, String>,
-    input_index: usize,
-    input_special: Color,
     table_state: TableState,
     list_state: ListState,
     status_line: StatusLine,
+    tag_form: Form<TagForm>,
     // keeping queries cached introduces a whole set of problems and
     // it might not even be worth, TODO: benchmark
     //mods_view: Vec<Mod>,
@@ -96,6 +92,8 @@ impl Model {
         res.status_line
             .state
             .change_hint(res.current_mode, &res.movement_delta);
+
+        res.tag_form.state.background_color = Color::Rgb(0x26, 0x26, 0x26);
         res
     }
     pub fn should_close(&self) -> bool {
@@ -162,39 +160,7 @@ impl Model {
             Mode::CreateTag => {
                 let area =
                     Self::popup_area(area, Constraint::Percentage(30), Constraint::Max(3 * 3));
-                let sections =
-                    Layout::vertical([Constraint::Max(3), Constraint::Max(3), Constraint::Max(3)])
-                        .split(area);
-
-                f.render_widget(ratatui::widgets::Clear, area);
-                for (idx, (s, n)) in sections.iter().zip(["Name", "Score", "Color"]).enumerate() {
-                    let fallback = self
-                        .input_collection
-                        .get(n)
-                        .map(|s| s.to_owned())
-                        .unwrap_or_default();
-
-                    Self::input_box(
-                        f,
-                        *s,
-                        n,
-                        if idx == self.input_index {
-                            if let Some(ss) = self.input_collection.remove(n) {
-                                self.input_buffer =
-                                    self.input_buffer.clone().with_value(ss.to_string());
-                            }
-                            Some(&self.input_buffer)
-                        } else {
-                            None
-                        },
-                        &fallback,
-                        if idx == 0 || idx == 2 {
-                            Some(self.input_special)
-                        } else {
-                            None
-                        },
-                    );
-                }
+                self.tag_form.render_widget(f, area);
             }
             Mode::ShowTags => {
                 let area =
@@ -230,39 +196,6 @@ impl Model {
             }
             _ => {}
         }
-    }
-    // TODO: This most likely warrants its very own widget
-    fn input_box(
-        f: &mut Frame,
-        section: Rect,
-        name: &str,
-        input: Option<&Input>,
-        fallback: &str,
-        color: Option<Color>,
-    ) {
-        let width = section.width.max(5) - 5;
-        let scroll = input
-            .map(|i| i.visual_scroll(width as usize))
-            .unwrap_or_default();
-        let block = Block::bordered().title(name);
-        let mut style = Style::default();
-        if let Some(c) = color {
-            style = style.fg(c);
-        }
-        let mut name = Paragraph::new(vec![Line::from(vec![Span::styled(
-            format!("> {}", input.map(|i| i.value()).unwrap_or(fallback)),
-            style,
-        )])])
-        .scroll((0, scroll as u16))
-        .block(block.clone())
-        .bg(Color::Rgb(0x26, 0x26, 0x26));
-
-        if input.is_some() {
-            name = name.block(block.style(Style::default().fg(Color::Rgb(0xfd, 0xdc, 0x69))));
-            let cur = input.unwrap().visual_cursor().max(scroll) - scroll;
-            f.set_cursor_position((section.x + cur as u16 + 3, section.y + 1));
-        }
-        f.render_widget(name, section);
     }
     fn popup_area(area: Rect, constraint_x: Constraint, constraint_y: Constraint) -> Rect {
         let vertical = Layout::vertical([constraint_y]).flex(Flex::Center);
@@ -315,15 +248,10 @@ impl Model {
                 }
                 return Some(Message::ClearCommand);
             }
-            Message::PropagateEvent(key) => {
-                self.input_buffer.handle_event(&key);
-                // TODO: Refactor to make intent clearer
-                if let Some(c) = self
-                    .input_collection
-                    .get("Color")
-                    .and_then(|v| Color::from_str(v).ok())
-                {
-                    self.input_special = c;
+            Message::PropagateEvent(ev) => {
+                if let Some(t) = self.tag_form.state.handle_input(&ev) {
+                    self.persistent.tags.upsert(t);
+                    return Some(Message::ChangeMode(Mode::Normal));
                 };
             }
             Message::InsertTag => {
@@ -338,54 +266,6 @@ impl Model {
                     .upsert_tag_to(self.table_state.selected().unwrap(), tag.clone());
                 return Some(Message::ChangeMode(Mode::Normal));
             }
-            // TODO: This logic shouldn't be responsability of App
-            Message::NextField => {
-                // TODO: Generalize
-                if matches!(self.current_mode, Mode::CreateTag) {
-                    match self.input_index {
-                        0 => {
-                            if !self.input_buffer.value().is_empty() {
-                                self.input_collection.insert(
-                                    "Name".to_string(),
-                                    self.input_buffer.value_and_reset(),
-                                );
-                                self.input_index += 1;
-                            }
-                        }
-                        1 => {
-                            if self.input_buffer.value().parse::<u64>().is_ok() {
-                                self.input_collection.insert(
-                                    "Score".to_string(),
-                                    self.input_buffer.value_and_reset(),
-                                );
-                                self.input_index += 1;
-                            }
-                        }
-                        _ => {
-                            if let Ok(color) = Color::from_str(self.input_buffer.value()) {
-                                self.input_collection.insert(
-                                    "Color".to_string(),
-                                    self.input_buffer.value_and_reset(),
-                                );
-                                self.persistent.tags.upsert(Tag {
-                                    name: self.input_collection.get("Name").unwrap().to_string(),
-                                    score: self
-                                        .input_collection
-                                        .get("Score")
-                                        .unwrap()
-                                        .parse()
-                                        .unwrap(),
-                                    color,
-                                });
-                                self.input_collection.clear();
-                                self.input_index = 0;
-                                self.list_state.select_first();
-                                return Some(Message::ChangeMode(Mode::Normal));
-                            }
-                        }
-                    }
-                }
-            }
             Message::ChangeMode(mode) => {
                 self.status_line.state.change_mode(mode);
                 self.status_line
@@ -393,13 +273,7 @@ impl Model {
                     .change_hint(mode, &self.movement_delta);
                 // TODO: Generalize
                 if matches!(mode, Mode::CreateTag) {
-                    self.input_collection.clear();
-                    let (r, g, b) = random_color();
-                    self.input_collection.insert(
-                        "Color".to_string(),
-                        format!("#{:0>2x}{:0>2x}{:0>2x}", r, g, b),
-                    );
-                    self.input_special = Color::Rgb(r, g, b);
+                    self.tag_form.state.reset();
                 }
                 self.current_mode = mode;
                 return Some(Message::ClearCommand);
@@ -408,43 +282,4 @@ impl Model {
         }
         None
     }
-}
-
-fn random_color() -> (u8, u8, u8) {
-    // Adapted from https://docs.rs/hsv
-    fn is_between(value: f64, min: f64, max: f64) -> bool {
-        min <= value && value < max
-    }
-
-    let mut rng = rand::rng();
-    let h: f64 = rng.random_range(0.0..360.0);
-    let s = rng.random_range(0.7..1.0);
-    let v = rng.random_range(0.7..1.0);
-    let c = v * s;
-
-    let h = h / 60.0;
-
-    let x = c * (1.0 - ((h % 2.0) - 1.0).abs());
-
-    let m = v - c;
-
-    let (r, g, b): (f64, f64, f64) = if is_between(h, 0.0, 1.0) {
-        (c, x, 0.0)
-    } else if is_between(h, 1.0, 2.0) {
-        (x, c, 0.0)
-    } else if is_between(h, 2.0, 3.0) {
-        (0.0, c, x)
-    } else if is_between(h, 3.0, 4.0) {
-        (0.0, x, c)
-    } else if is_between(h, 4.0, 5.0) {
-        (x, 0.0, c)
-    } else {
-        (c, 0.0, x)
-    };
-
-    (
-        ((r + m) * 255.0) as u8,
-        ((g + m) * 255.0) as u8,
-        ((b + m) * 255.0) as u8,
-    )
 }

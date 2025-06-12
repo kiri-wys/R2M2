@@ -13,7 +13,6 @@ pub enum Message {
     AppendMovement(char),
     MoveDirection(MoveDirection),
     PropagateEvent(Event),
-    NextField,
     InsertTag,
     ChangeMode(Mode),
     Exit,
@@ -26,7 +25,6 @@ pub fn try_message(model: &Model, ev: Event) -> Option<Message> {
                 Mode::CreateTag => {
                     let res = match key_event.code {
                         KeyCode::Esc => Message::ChangeMode(Mode::Normal),
-                        KeyCode::Insert | KeyCode::Tab | KeyCode::Enter => Message::NextField,
                         _ => Message::PropagateEvent(ev),
                     };
                     Some(res)
@@ -48,7 +46,7 @@ fn normal_key_press(key: KeyEvent) -> Option<Message> {
         KeyCode::Esc => Message::ClearCommand,
         KeyCode::Char(c) if c.is_ascii_digit() => Message::AppendMovement(c),
         KeyCode::Char('q') => Message::Exit,
-        KeyCode::Char('T') => Message::ChangeMode(Mode::CreateTag),
+        KeyCode::Char('c') => Message::ChangeMode(Mode::CreateTag),
         KeyCode::Char('t') => Message::ChangeMode(Mode::ShowTags),
         KeyCode::Char('i') => Message::ChangeMode(Mode::Insert),
         KeyCode::Char('?') => todo!(),
